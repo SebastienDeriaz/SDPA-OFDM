@@ -77,8 +77,6 @@ class ofdm_modulator():
             self.N_pilots = pilots_indices.shape[0]
             if not np.all(np.diff(pilots_indices, axis=0) >= 0):
                 raise ValueError("Pilots indices must be ordered")
-        
-
 
         # Save the values in the class
         self._N_FFT = N_FFT
@@ -89,7 +87,7 @@ class ofdm_modulator():
         self._padding_left = padding_left
         self._padding_right = padding_right
         self._pilots_indices = pilots_indices
-        self._pilots = pilots
+        self._pilots = np.squeeze(pilots)
 
         self._IG = 1/8  # TODO : do this correctly
 
@@ -97,6 +95,8 @@ class ofdm_modulator():
 
         # Length is FFT minus all the non-data channels (padding + pilots)
         self._message_split_length = (self._N_FFT - self._N_pilots - self._padding_left - self._padding_right) * self._bits_per_symbol
+
+        self._pilots_column_index = 0 # Used only with variable pilots indices (multiple columns)
 
     def _split_message(self, message, pad=False):
         """
@@ -173,16 +173,16 @@ class ofdm_modulator():
         # Only adding 0s at the moment
         # TODO : Study OFDM pilots and update this code
         # Maybe add a sequential option (OFDM pilots are dependent on the previous ones)
-        message_str = '0'*self._padding_left + '-'*message.shape[0] + '0'*self._padding_right
-        self._print_verbose("Adding OFDM pilots...")
+        message_str = '-'*message.shape[0]
+
+        
+
+        self._print_verbose("Adding OFDM pilots and padding...")
         self._print_verbose("    Message without pilots :")
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
 
-        # Currently this system puts a pilot at the beggining, one at the end and the rest in the middle
-        # Pilots MUST be in the right order !
-        pilots_indices = np.concatenate([np.array(
-            [0]), -np.arange(self._N_pilots - 2)[::-1] + self._N_FFT//2, np.array([self._N_FFT-1])])
-        self._print_verbose(f"    Adding pilots at indices : {pilots_indices}")
+        # Adding padding 
+        self._print_verbose(f"    Adding padding ({self._padding_left}, {self._padding_right})")
 
         ifft_channels = message.copy()
         # Add left padding
@@ -190,9 +190,41 @@ class ofdm_modulator():
         # Add right padding
         ifft_channels = np.concatenate([np.zeros([self._padding_right, ifft_channels.shape[1]]), ifft_channels], axis=1)
 
-        for i in pilots_indices + self._N_FFT//2:
-            ifft_channels = np.insert(ifft_channels, i, 0, axis=0)
-            message_str = message_str[0:i] + 'P' + message_str[i:]
+        message_str = '0'*self._padding_left + message_str + '0'*self._padding_right
+        self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
+
+        # Adding pilots
+        
+
+        if self._pilots_indices.ndim == 1:
+            # Constant pilots indices
+            self._print_verbose(f"    Adding pilots at indices : {self._pilots_indices}")
+
+            for i in self._pilots_indices + self._N_FFT//2:
+                ifft_channels = np.insert(ifft_channels, int(np.round(i)), 0, axis=0)
+                message_str = message_str[0:i] + 'P' + message_str[i:]
+                
+        else:
+            # Variable pilots indices
+            # Set the pilots differently for each message column
+            for c in range(message.shape[1]):
+
+                # TODO : Fill everything here
+                
+                self._pilots_column_index += 1
+
+            for i in self._pilots_indices[:,c] + self._N_FFT//2:
+                if 0 <= self._pilots.ndim <= 1
+
+
+                ifft_channels[:,c] = np.insert(ifft_channels[:,c], int(np.round(i)), self._pilots, axis=0)
+                message_str = message_str[0:i] + 'P' + message_str[i:]
+
+
+            
+
+
+        
 
         self._print_verbose("    Message with pilots :")
         self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
