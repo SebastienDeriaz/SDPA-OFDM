@@ -1,2 +1,18 @@
 # SDPA-OFDM
- OFDM Modulator (HES-SO Master, PA 2022)
+
+OFDM Modulation
+
+
+## Installation
+
+    pip install SDPA-OFDM
+
+## Usage
+
+```python
+from SDPA_OFDM import ofdm_modulator
+
+mod = ofdm_modulator(args)
+
+I, Q = mod.messageToIQ(message)
+```
