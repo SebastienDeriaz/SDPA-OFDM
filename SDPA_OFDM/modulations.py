@@ -83,6 +83,8 @@ class QPSK(modulator):
 
     def convert(self, signal):
         if isinstance(signal, np.ndarray):
+            BPSK_mod = BPSK(HIGH = 1, MSB_first=self.MSB_first, axis=self.axis)
+
             if self.MSB_first:
                 first, second = 1, 1j
             else:
@@ -91,20 +93,20 @@ class QPSK(modulator):
             match signal.ndim:
                 case 1:
                     # One-dimensional array
-                    output = (BPSK(signal[::2]) * first +
-                              BPSK(signal[1::2]) * second) * self.HIGH
+                    output = (BPSK_mod.convert(signal[::2]) * first +
+                              BPSK_mod.convert(signal[1::2]) * second) * self.HIGH
                 case 2:
                     # 2D array (mapping along the specified axis)
                     if self.axis == 0:
                         assert np.mod(
                             signal.shape[0], 2) == 0, "Invalid number of elements"
-                        output = (BPSK(signal[::2, :]) * first +
-                                  BPSK(signal[1::2, :]) * second) * self.HIGH
+                        output = (BPSK_mod.convert(signal[::2, :]) * first +
+                                  BPSK_mod.convert(signal[1::2, :]) * second) * self.HIGH
                     elif self.axis == 1:
                         assert np.mod(
                             signal.shape[1], 2) == 0, "Invalid number of elements"
-                        output = (BPSK(signal[:, ::2]) * first +
-                                  BPSK(signal[:, 1::2]) * second) * self.HIGH
+                        output = (BPSK_mod.convert(signal[:, ::2]) * first +
+                                  BPSK_mod.convert(signal[:, 1::2]) * second) * self.HIGH
                     else:
                         raise ValueError("Invalid axis")
                 case _:
