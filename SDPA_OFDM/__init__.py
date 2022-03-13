@@ -1,1 +1,1 @@
-from SDPA_OFDM.ofdm_modulator import ofdm_modulator
+from SDPA_OFDM.modulator import ofdm_modulator

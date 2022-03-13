@@ -102,6 +102,7 @@ class ofdm_modulator():
         # Save the values in the class
         self._N_FFT = N_FFT
         self._BW = BW
+        print(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
         self._modulator = get_modulator(
             modulation, HIGH=1, MSB_first=MSB_first)
         self.verbose = verbose
