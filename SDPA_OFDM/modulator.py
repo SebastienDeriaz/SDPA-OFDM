@@ -113,9 +113,10 @@ class ofdm_modulator():
 
         self._bits_per_symbol = self._modulator.bits_per_symbol()
 
+        self._DC_TONE = 1
         # Length is FFT minus all the non-data channels (padding + pilots)
         self._message_split_length = (
-            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right) * self._bits_per_symbol
+            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol
 
         # Used only with variable pilots indices (multiple columns)
         self._pilots_column_index = 0
@@ -197,14 +198,14 @@ class ofdm_modulator():
         # Maybe add a sequential option (OFDM pilots are dependent on the previous ones)
         message_str = '-'*message.shape[0]
         
-        self._print_verbose("Adding OFDM " + ("pilots and" if self._N_pilots else '') +  "padding...")
+        self._print_verbose("Adding OFDM " + ("pilots, " if self._N_pilots else '') +  "DC Tone and padding...")
         self._print_verbose("    Message without pilots :")
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
 
         # Adding padding
         self._print_verbose(
             f"    Adding padding ({self._padding_left}, {self._padding_right})")
-
+        message_str = '0'*self._padding_left + message_str + '0'*self._padding_right
         ifft_channels = message.copy()
         # Add left padding
         if self._padding_left > 0:
@@ -215,8 +216,15 @@ class ofdm_modulator():
             zeros = np.zeros([self._padding_right, ifft_channels.shape[1]])
             ifft_channels = np.concatenate([ifft_channels, zeros], axis=0)
 
-        message_str = '0'*self._padding_left + message_str + '0'*self._padding_right
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
+
+        # Adding DC Tone
+        self._print_verbose("    Adding DC Tone")
+        ifft_channels = np.insert(
+            ifft_channels, 0 + self._N_FFT//2, 0, axis=0)
+        message_str = message_str[0:self._N_FFT//2] + 'D' + message_str[self._N_FFT//2:]
+        self._print_verbose("    Message with DC Tone :")
+        self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
 
         # Adding pilots. There are 3 possibilities :
         # A : pilots is a single valuex
