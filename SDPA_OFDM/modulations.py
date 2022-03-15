@@ -10,24 +10,18 @@ import numpy as np
 
 
 class modulator():
-    def __init__(self, HIGH=1, MSB_first=True, axis=0):
+    def __init__(self, MSB_first=True, axis=0):
         """
         Modulator class
 
         Parameters
         ----------
-        HIGH : int, float
-            Highest value of the constellation (magnitude of the furthest symbols)
         MSB_first : bool
             Describes if MSB is first in the array (default True). Ignored for BPSK modulation
         axis : int
             Specifies in which axis the conversion must be done (for 2D arrays)
         """
         # Check types and values
-        if not (isinstance(HIGH, int) or isinstance(HIGH, float)):
-            raise ValueError('HIGH must be int or float')
-        elif HIGH < 0:
-            raise ValueError('HIGH cannot be negative')
         if not isinstance(MSB_first, bool):
             raise ValueError('MSB_first must be of type bool')
         if not isinstance(axis, int):
@@ -35,7 +29,6 @@ class modulator():
         elif axis < 0:
             raise ValueError('axis cannot be negative')
 
-        self.HIGH = HIGH
         self.MSB_first = MSB_first
         self.axis = axis
         self.name = ""
@@ -49,19 +42,20 @@ class modulator():
 
 class BPSK(modulator):
     """
-    Maps >0 values to HIGH and everything else to -HIGH
+    Maps >0 values to 1 and everything else to -1
     """
 
     def convert(self, signal):
+        HIGH = 1
         if isinstance(signal, int | float):
             # Single value
-            output = self.HIGH if signal > 0 else -self.HIGH
+            output = HIGH if signal > 0 else -HIGH
         elif isinstance(signal, np.ndarray):
             # Array
-            output = np.ones_like(signal) * (-self.HIGH)
-            output[signal > 0] = self.HIGH
+            output = np.ones_like(signal) * (-HIGH)
+            output[signal > 0] = HIGH
         elif isinstance(signal, list):
-            output = [self.HIGH if a > 0 else -self.HIGH for a in signal]
+            output = [HIGH if a > 0 else -HIGH for a in signal]
         else:
             raise ValueError("Unsupported type")
         return output
@@ -72,18 +66,17 @@ class BPSK(modulator):
 
 class QPSK(modulator):
     """
-    Separates the signal by group of 2 bits then Maps the signal on a circle
-        00 -> sqrt(2)/2*(-1-1j)
-        01 -> sqrt(2)/2*(-1+1j)
-        10 -> sqrt(2)/2*(+1-1j)
-        11 -> sqrt(2)/2*(+1+1j)
-
-        HIGH is orthogonal amplitude of each symbol (by default sqrt(2)/2)
+    Separates the signal by group of 2 bits then Maps the signal on a square
+        00 -> -1-1j
+        01 -> -1+1j
+        10 -> +1-1j
+        11 -> +1+1j
     """
 
     def convert(self, signal):
+        HIGH = 1
         if isinstance(signal, np.ndarray):
-            BPSK_mod = BPSK(HIGH = 1, MSB_first=self.MSB_first, axis=self.axis)
+            BPSK_mod = BPSK(MSB_first=self.MSB_first, axis=self.axis)
 
             if self.MSB_first:
                 first, second = 1, 1j
@@ -94,19 +87,19 @@ class QPSK(modulator):
                 case 1:
                     # One-dimensional array
                     output = (BPSK_mod.convert(signal[::2]) * first +
-                              BPSK_mod.convert(signal[1::2]) * second) * self.HIGH
+                              BPSK_mod.convert(signal[1::2]) * second) * HIGH
                 case 2:
                     # 2D array (mapping along the specified axis)
                     if self.axis == 0:
                         assert np.mod(
                             signal.shape[0], 2) == 0, "Invalid number of elements"
                         output = (BPSK_mod.convert(signal[::2, :]) * first +
-                                  BPSK_mod.convert(signal[1::2, :]) * second) * self.HIGH
+                                  BPSK_mod.convert(signal[1::2, :]) * second) * HIGH
                     elif self.axis == 1:
                         assert np.mod(
                             signal.shape[1], 2) == 0, "Invalid number of elements"
                         output = (BPSK_mod.convert(signal[:, ::2]) * first +
-                                  BPSK_mod.convert(signal[:, 1::2]) * second) * self.HIGH
+                                  BPSK_mod.convert(signal[:, 1::2]) * second) * HIGH
                     else:
                         raise ValueError("Invalid axis")
                 case _:
@@ -123,11 +116,11 @@ class QAM16(modulator):
     """
     Maps the values on a 4x4 QAM matrix
     (multiple standards exists for the symbols order)
-
-        1000  1001  1011  1010
-        1100  1101  1111  1110
-        0100  0101  0111  0110
-        0000  0001  0011  0010
+        -3j    -j    +j    +3j
+        1000  1001  1011  1010 +3
+        1100  1101  1111  1110 +1
+        0100  0101  0111  0110 -1
+        0000  0001  0011  0010 -3
 
     """
 
@@ -136,40 +129,34 @@ class QAM16(modulator):
         # Vertically "close" to center is given by the next bit
         # Right/Left of Y axis is given by the next bit
         # Horizontally "close" to center is given by LSB
+        axis = self.axis
 
         if(isinstance(signal, np.ndarray)):
             # We expect the signal to be a numpy array
-            match signal.ndim:
-                case 1:
-                    # One-dimensional array
-                    if self.MSB_first:
-                        output = BPSK(signal[::4]) * 2/3 * self.HIGH * 1j * BPSK(signal[1::4], HIGH=1/2, LOW=3/2) + BPSK(
-                            signal[2::4]) * 2/3 * self.HIGH * BPSK(signal[3::4], HIGH=1/2, LOW=3/2)
-                    else:
-                        output = BPSK(signal[3::4]) * 2/3 * self.HIGH * 1j * BPSK(signal[2::4], HIGH=1/2, LOW=3/2) + BPSK(
-                            signal[1::4]) * 2/3 * self.HIGH * BPSK(signal[::4], HIGH=1/2, LOW=3/2)
-                case 2:
-                    # 2D array
-                    match self.axis:
-                        case 0:
-                            if self.MSB_first:
-                                output = BPSK(signal[::4, :]) * 2/3 * self.HIGH * 1j * BPSK(signal[1::4, :], HIGH=1/2, LOW=3/2) + BPSK(
-                                    signal[2::4, :]) * 2/3 * self.HIGH * BPSK(signal[3::4, :], HIGH=1/2, LOW=3/2)
-                            else:
-                                output = BPSK(signal[3::4, :]) * 2/3 * self.HIGH * 1j * BPSK(signal[2::4, :], HIGH=1/2, LOW=3/2) + BPSK(
-                                    signal[1::4, :]) * 2/3 * self.HIGH * BPSK(signal[::4, :], HIGH=1/2, LOW=3/2)
-                        case 1:
-                            if self.MSB_first:
-                                output = BPSK(signal[:, ::4]) * 2/3 * self.HIGH * 1j * BPSK(signal[:, 1::4], HIGH=1/2, LOW=3/2) + BPSK(
-                                    signal[:, 2::4]) * 2/3 * self.HIGH * BPSK(signal[:, 3::4], HIGH=1/2, LOW=3/2)
-                            else:
-                                output = BPSK(signal[:, 3::4]) * 2/3 * self.HIGH * 1j * BPSK(signal[:, 2::4], HIGH=1/2, LOW=3/2) + BPSK(
-                                    signal[:, 1::4]) * 2/3 * self.HIGH * BPSK(signal[:, ::4], HIGH=1/2, LOW=3/2)
-                        case _:
-                            raise ValueError("Invalid axis")
-                    pass
-                case _:
-                    raise ValueError(f"Invalid signal shape {signal.shape}")
+            if signal.ndim == 1:
+                # Make it a column vector
+                signal = signal.reshape(-1, 1)
+                axis = 0  # force the axis
+            elif signal.ndim == 2:
+                if axis == 1:
+                    # Swap the signal
+                    signal = signal.T
+                elif axis != 0:
+                    raise ValueError(f"Invalid axis ({axis})")
+            else:
+                raise ValueError(f"Invalid signal shape {signal.shape}")
+
+            BPSK_mod = BPSK(axis=0)
+
+            # Imaginary part
+            imag = BPSK_mod.convert(signal[(None if self.MSB_first else 3)::4, :]) * 2 * 1j * (BPSK_mod.convert(
+                signal[(1 if self.MSB_first else 2)::4, :]) / 2 + 1)
+            # Real part
+            real = BPSK_mod.convert(signal[(2 if self.MSB_first else 1)::4, :]) * 2 * (BPSK_mod.convert(
+                signal[(3 if self.MSB_first else None)::4, :]) /2 + 1)
+
+            output = real + imag
+
             return output
 
         else:
@@ -186,7 +173,7 @@ def get_modulator_dict():
     return {'BPSK': BPSK, 'QPSK': QPSK, 'QAM16': QAM16}
 
 
-def get_modulator(mod: str, HIGH=1, MSB_first=True, axis=0) -> modulator:
+def get_modulator(mod: str, MSB_first=True, axis=0) -> modulator:
     """
     Provides the requested modulator as subclass of modulator()
 
@@ -200,6 +187,6 @@ def get_modulator(mod: str, HIGH=1, MSB_first=True, axis=0) -> modulator:
     if not mod in get_modulator_dict().keys():
         raise ValueError("Invalid modulator")
     else:
-        mod_instance = get_modulator_dict()[mod](HIGH, MSB_first, axis)
+        mod_instance = get_modulator_dict()[mod](MSB_first, axis)
         mod_instance.name = mod
         return mod_instance
