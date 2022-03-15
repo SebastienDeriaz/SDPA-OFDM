@@ -8,8 +8,6 @@ Output can be requested by calling the appropriate function, i.e.
     I, Q = modulator.getIQ()
 """
 
-from multiprocessing.sharedctypes import Value
-from tabnanny import verbose
 from SDPA_OFDM.modulations import get_modulator
 import math
 import numpy as np
@@ -17,7 +15,7 @@ from numpy.fft import fft, ifft, fftshift, ifftshift, fftfreq
 
 
 class ofdm_modulator():
-    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', padding_left=0, padding_right=0, pilots_indices=None, pilots=None, rate=None, rep=None, MSB_first=True, verbose=False):
+    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, rate=None, frequency_spreading=1, MSB_first=True, verbose=False):
         """
         Returns an OFDM modulator with the desired settings
 
@@ -46,8 +44,11 @@ class ofdm_modulator():
             Size must match pilots_indices !
         rate : ?
             TODO : Implement
-        rep : ?
-            TODO : Implement
+        frequency_spreading : int
+            1 : no spreading
+            2 : 2x spreading (half the data rate)
+            4 : 4x spreading (1/4 the data rate)
+            See 18.2.3.6 Frequency spreading
         verbose : bool
             if True, prints informations throughout the process (False by default)
         MSB_first : bool
@@ -72,6 +73,12 @@ class ofdm_modulator():
             raise ValueError("Pilots must have corresponding indices")
         elif pilots_indices is not None and pilots is None:
             raise ValueError("Pilots indices must have pilots values")
+        if not isinstance(frequency_spreading, int):
+            raise ValueError("frequency_spreading must be int")
+        elif not frequency_spreading in [1, 2, 4]:
+            raise ValueError(
+                f"Invalid frequency_spreading value {frequency_spreading}, must be [1, 2, 4]")
+
         # Check pilots_indices and pilots (for type and same shape)
         if pilots is not None:
             if isinstance(pilots_indices, np.ndarray):
@@ -83,19 +90,22 @@ class ofdm_modulator():
                     if not np.all(np.diff(pilots_indices, axis=0) >= 0):
                         raise ValueError("Pilots indices must be ordered")
                 else:
-                    raise ValueError(f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
+                    raise ValueError(
+                        f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
             else:
                 raise ValueError("pilots_indices must be a numpy array")
             if not isinstance(pilots, np.ndarray):
                 raise ValueError("pilots must be a numpy array")
             else:
                 if pilots.ndim > 2:
-                    raise ValueError(f"Invalid pilots dimension ({pilots.ndim} for shape {pilots.shape})")
+                    raise ValueError(
+                        f"Invalid pilots dimension ({pilots.ndim} for shape {pilots.shape})")
             if pilots.shape != pilots_indices.shape:
                 raise ValueError(
                     "pilots and pilots_indices must have similar shape")
             self._pilots = np.round(np.squeeze(pilots)).astype(int)
-            self._pilots_indices = np.round(np.squeeze(pilots_indices)).astype(int)
+            self._pilots_indices = np.round(
+                np.squeeze(pilots_indices)).astype(int)
         else:
             self._N_pilots = 0
 
@@ -103,11 +113,12 @@ class ofdm_modulator():
         self._N_FFT = N_FFT
         self._BW = BW
         print(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
-        self._modulator = get_modulator(
-            modulation, HIGH=1, MSB_first=MSB_first)
+        self._modulator = get_modulator(modulation, MSB_first=MSB_first)
         self.verbose = verbose
         self._padding_left = padding_left
         self._padding_right = padding_right
+        self._modulation_factor = modulation_factor
+        self._frequency_spreading = frequency_spreading
 
         self._IG = 1/8  # TODO : do this correctly
 
@@ -116,7 +127,7 @@ class ofdm_modulator():
         self._DC_TONE = 1
         # Length is FFT minus all the non-data channels (padding + pilots)
         self._message_split_length = (
-            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol
+            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol / self._frequency_spreading
 
         # Used only with variable pilots indices (multiple columns)
         self._pilots_column_index = 0
@@ -176,10 +187,70 @@ class ofdm_modulator():
         """
         self._print_verbose(
             f"Constellation mapping using {self._modulator.name}...")
-        mapped_message = self._modulator.convert(message)
+        mapped_message = self._modulator.convert(
+            message) * self._modulation_factor
         self._print_verbose(
             f"    New message size {message.shape} -> {mapped_message.shape} ({mapped_message.shape[0]} + pilots as IFFT channels and {mapped_message.shape[1]} OFDM symbols)")
         return mapped_message
+
+    def _frequency_spread(self, message):
+        """
+        Applies frequency spreading to the message (repetition)
+        1 : No repetition
+        2 : Data is placed in the positive values of the FFT and copied on the lower (negative) values
+        4 : Data is placed in the lower positive values of the FFT and copied on the 4 others segments
+        See 18.2.3.6 Frequency spreading
+        """
+
+        # NOTE :
+        # The specification says :
+        #   (2 x k - 1)
+        #   not sure if this is supposed to say (2*k - 1) or (2 * (k-1))
+        #
+        # We will use is "as is", so 2*k  then - 1
+
+        if self._frequency_spreading == 1:
+            # No spreading to do
+            return message
+        elif self._frequency_spreading == 2:
+            # d(k-Nd/2-1) = d(k) * e^(j*2*pi*(2*k-1)/4)
+
+            # k is the index (positive and starts at 1)
+            # k :
+            #  0 0 0 ..
+            #  1 1 1 ..
+            #  2 2 2 ..
+            #  . . .
+            k = (
+                np.arange(message.shape[0])+1).repeat(message.shape[1]).reshape(*message.shape)
+            # phase is the phase matrix (for each data value)
+            phase = np.exp(1j*2*np.pi*(2*k-1)/4)
+            # lower portion of the FFT, message is the higher portion
+            lower = message * phase
+
+            spread_message = np.block([[lower, message]])
+
+            return spread_message
+        elif self._frequency_spreading == 4:
+            # Same principle as 2x but a bit more complicated
+            # message is located here :
+            # ----------------Dmmmmmmmm--------
+            # Setting k matrix (just like before)
+            k = (
+                np.arange(message.shape[0])+1).repeat(message.shape[1]).reshape(*message.shape)
+            # ----------------D--------xxxxxxxx
+            phase = np.exp(1j*2*np.pi*(k-1)/4)
+            positive_high = message * phase
+            # xxxxxxxx--------D----------------
+            phase = np.exp(1j*2*np.pi*(2*k - 1)/4)
+            negative_low = message * phase
+            # --------xxxxxxxxD----------------
+            phase = np.exp(1j*2*np.pi*(3*k - 1)/4)
+            negative_high = message * phase
+
+            spread_message = np.block(
+                [[negative_low], [negative_high], [message], [positive_high]])
+            return spread_message
 
     def _add_pilots_and_padding(self, message):
         """
@@ -197,8 +268,9 @@ class ofdm_modulator():
         # TODO : Study OFDM pilots and update this code
         # Maybe add a sequential option (OFDM pilots are dependent on the previous ones)
         message_str = '-'*message.shape[0]
-        
-        self._print_verbose("Adding OFDM " + ("pilots, " if self._N_pilots else '') +  "DC Tone and padding...")
+
+        self._print_verbose(
+            "Adding OFDM " + ("pilots, " if self._N_pilots else '') + "DC Tone and padding...")
         self._print_verbose("    Message without pilots :")
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
 
@@ -222,7 +294,8 @@ class ofdm_modulator():
         self._print_verbose("    Adding DC Tone")
         ifft_channels = np.insert(
             ifft_channels, 0 + self._N_FFT//2, 0, axis=0)
-        message_str = message_str[0:self._N_FFT//2] + 'D' + message_str[self._N_FFT//2:]
+        message_str = message_str[0:self._N_FFT//2] + \
+            'D' + message_str[self._N_FFT//2:]
         self._print_verbose("    Message with DC Tone :")
         self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
 
@@ -237,33 +310,40 @@ class ofdm_modulator():
                     f"    Adding pilot {self._pilots} at index : {self._pilots_indices}")
                 ifft_channels = np.insert(
                     ifft_channels, self._pilots_indices + self._N_FFT//2, self._pilots, axis=0)
-                message_str = message_str[0:self._pilots_indices  + self._N_FFT//2] + 'P' + message_str[self._pilots_indices  + self._N_FFT//2:]
+                message_str = message_str[0:self._pilots_indices + self._N_FFT //
+                                          2] + 'P' + message_str[self._pilots_indices + self._N_FFT//2:]
                 self._print_verbose("    Message with pilots :")
-                self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
+                self._print_verbose(
+                    f"    {message_str} ({ifft_channels.shape[0]}x)")
 
             elif self._pilots_indices.ndim == 1:
                 # B : pilots is a 1D array (multiple pilots, same for each symbol)
-                self._print_verbose(f"    Adding pilot {self._pilots} at indices : {self._pilots_indices}")
+                self._print_verbose(
+                    f"    Adding pilot {self._pilots} at indices : {self._pilots_indices}")
                 for i, p in zip(self._pilots_indices + self._N_FFT//2, self._pilots):
                     ifft_channels = np.insert(
                         ifft_channels, i, p, axis=0)
                     message_str = message_str[0:i] + 'P' + message_str[i:]
                 self._print_verbose("    Message with pilots :")
-                self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
+                self._print_verbose(
+                    f"    {message_str} ({ifft_channels.shape[0]}x)")
             else:
                 # C : pilots is a 2D array (multiple pilots, different for each symbol)
-                self._print_verbose("    Messages with pilots (different for each symbol) :")
+                self._print_verbose(
+                    "    Messages with pilots (different for each symbol) :")
                 for c in range(message.shape[1]):
                     # message_str is specific to each column
                     message_str_i = message_str
                     # Iterate over the columns
                     # use the pilots_column_index to select which column to set (stored in the class)
-                    for r, p in zip(self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2, self._pilots[:,self._pilots_column_index]):
-                        ifft_channels[:, c] = np.insert(ifft_channels[:, c], r, p, axis=0)
-                        message_str_i = message_str_i[0:r] + 'P' + message_str_i[r:]
-                    
-                    self._print_verbose(f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
+                    for r, p in zip(self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2, self._pilots[:, self._pilots_column_index]):
+                        ifft_channels[:, c] = np.insert(
+                            ifft_channels[:, c], r, p, axis=0)
+                        message_str_i = message_str_i[0:r] + \
+                            'P' + message_str_i[r:]
 
+                    self._print_verbose(
+                        f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
 
                     # Add 1 to the column index, if it reaches the number of columns of the pilots
                     # it loops over to 1
@@ -352,9 +432,13 @@ class ofdm_modulator():
         ### Constellation mapping ###
         message_split_mapped = self._constellation_map(message_split)
 
+        ### Frequency spreading ###
+        message_split_mapped_spread = self._frequency_spread(
+            message_split_mapped)
+
         ### Adding pilots and padding###
         message_split_mapped_pilots = self._add_pilots_and_padding(
-            message_split_mapped)
+            message_split_mapped_spread)
 
         ### IFFT ###
         Ts, signal = self._ifft(message_split_mapped_pilots)
