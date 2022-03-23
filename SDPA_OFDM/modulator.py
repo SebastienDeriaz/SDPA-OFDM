@@ -15,7 +15,7 @@ from numpy.fft import fft, ifft, fftshift, ifftshift, fftfreq
 
 
 class ofdm_modulator():
-    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, frequency_spreading=1, MSB_first=True, verbose=False):
+    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, CP=1/8, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, frequency_spreading=1, MSB_first=True, verbose=False):
         """
         Returns an OFDM modulator with the desired settings
 
@@ -47,6 +47,8 @@ class ofdm_modulator():
             2 : 2x spreading (half the data rate)
             4 : 4x spreading (1/4 the data rate)
             See 18.2.3.6 Frequency spreading
+        CP : float
+            Cyclic prefix. This fraction ot the end of the symbol in the time domain is repeated at the beginning
         verbose : bool
             if True, prints informations throughout the process (False by default)
         MSB_first : bool
@@ -110,15 +112,14 @@ class ofdm_modulator():
         # Save the values in the class
         self._N_FFT = N_FFT
         self._BW = BW
-        self._print_verbose(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
         self._modulator = get_modulator(modulation, MSB_first=MSB_first)
-        self.verbose = verbose
+        self._verbose = verbose
         self._padding_left = padding_left
         self._padding_right = padding_right
         self._modulation_factor = modulation_factor
         self._frequency_spreading = frequency_spreading
 
-        self._IG = 1/8  # TODO : do this correctly
+        self._CP = CP
 
         self._bits_per_symbol = self._modulator.bits_per_symbol()
 
@@ -129,6 +130,8 @@ class ofdm_modulator():
 
         # Used only with variable pilots indices (multiple columns)
         self._pilots_column_index = 0
+
+        self._print_verbose(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
 
     def _split_message(self, message, pad=False):
         """
@@ -393,7 +396,7 @@ class ofdm_modulator():
         self._print_verbose("Adding cyclic prefix...")
 
         cyclic_signal = np.concatenate(
-            [signal[0:int(signal.shape[0]*self._IG)], signal])
+            [signal[0:int(signal.shape[0]*self._CP)], signal])
         self._print_verbose(
             f"    Signal {signal.shape} -> {cyclic_signal.shape}")
         return cyclic_signal
@@ -459,6 +462,15 @@ class ofdm_modulator():
         subcarriers : ndarray
             List of subcarriers. 1D or 2D with each column corresponding to a symbol.
             Must have the same number of samples as N_FFT
+
+        Returns
+        -------
+            I : ndarray
+                Real part of the signal
+            Q : ndarray 
+                Imaginary part of the signal
+            t : ndarray
+                Time vector
         """
         if subcarriers.ndim == 1:
             subcarriers = subcarriers.reshape(-1,1)
@@ -483,5 +495,5 @@ class ofdm_modulator():
         """
         Prints additionnal information if the verbose flag is True
         """
-        if(self.verbose):
+        if(self._verbose):
             print(message)
