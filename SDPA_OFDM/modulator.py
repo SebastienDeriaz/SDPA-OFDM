@@ -15,7 +15,7 @@ from numpy.fft import fft, ifft, fftshift, ifftshift, fftfreq
 
 
 class ofdm_modulator():
-    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, rate=None, frequency_spreading=1, MSB_first=True, verbose=False):
+    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, frequency_spreading=1, MSB_first=True, verbose=False):
         """
         Returns an OFDM modulator with the desired settings
 
@@ -42,8 +42,6 @@ class ofdm_modulator():
             Pilots values. If 1D, pilots will be the same for each symbol. If 2D, each column will represent the values for each symbol. Once the last column is used, the counter will loop back to the first one
             None by default (no pilots)
             Size must match pilots_indices !
-        rate : ?
-            TODO : Implement
         frequency_spreading : int
             1 : no spreading
             2 : 2x spreading (half the data rate)
@@ -450,6 +448,38 @@ class ofdm_modulator():
         I, Q = signal_cyclic.real, signal_cyclic.imag
 
         return I, Q, t
+
+    def subcarriersToIQ(self, subcarriers):
+        """
+        Converts a list of subcarriers to I and Q signals
+        Essentially this function applies IFFT and cyclic prefix
+
+        Parameters
+        ----------
+        subcarriers : ndarray
+            List of subcarriers. 1D or 2D with each column corresponding to a symbol.
+            Must have the same number of samples as N_FFT
+        """
+        if subcarriers.ndim == 1:
+            subcarriers = subcarriers.reshape(-1,1)
+        elif subcarriers.ndim != 2:
+            raise ValueError(f"Invalid number of dimensions ({subcarriers.ndim})")
+
+        if subcarriers.shape[0] != self._N_FFT:
+            raise ValueError(f"Invalid number of subcarriers ({subcarriers.shape[0]} / {self._N_FFT})")
+
+        ### IFFT ###
+        Ts, signal = self._ifft(subcarriers)
+
+        ### Cyclic prefix ###
+        signal_cyclic = self._cyclic_prefix(signal)
+        t = np.arange(0, signal_cyclic.shape[0] * Ts, Ts)
+
+        I, Q = signal_cyclic.real, signal_cyclic.imag
+
+        return I, Q, t
+
+
 
     def _print_verbose(self, message: str):
         """
