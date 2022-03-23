@@ -110,7 +110,7 @@ class ofdm_modulator():
         # Save the values in the class
         self._N_FFT = N_FFT
         self._BW = BW
-        print(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
+        self._print_verbose(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
         self._modulator = get_modulator(modulation, MSB_first=MSB_first)
         self.verbose = verbose
         self._padding_left = padding_left
@@ -478,8 +478,6 @@ class ofdm_modulator():
         I, Q = signal_cyclic.real, signal_cyclic.imag
 
         return I, Q, t
-
-
 
     def _print_verbose(self, message: str):
         """
