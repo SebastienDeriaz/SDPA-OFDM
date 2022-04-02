@@ -33,7 +33,20 @@ class modulator():
         self.axis = axis
         self.name = ""
 
-    def convert(self):
+    def convert(self, signal):
+        """
+        Applies modulation to the signal
+
+        Parameters
+        ----------
+        signal : ndarray
+            Input signal (bits)
+
+        Returns
+        -------
+        output : ndarray
+            Modulated output signal values
+        """
         raise NotImplementedError("modulator class cannot be used directly")
 
     def bits_per_symbol(self):
@@ -46,7 +59,7 @@ class BPSK(modulator):
     """
 
     def convert(self, signal):
-        HIGH = 1
+        HIGH = 1 + 0j
         if isinstance(signal, int | float):
             # Single value
             output = HIGH if signal > 0 else -HIGH
