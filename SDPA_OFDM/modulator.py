@@ -9,13 +9,14 @@ Output can be requested by calling the appropriate function, i.e.
 """
 
 from SDPA_OFDM.modulations import get_modulator
+from SDPA_OFDM.pn9 import pn9
 import math
 import numpy as np
 from numpy.fft import fft, ifft, fftshift, ifftshift, fftfreq
 
 
 class ofdm_modulator():
-    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, CP=1/8, padding_left=0, padding_right=0, pilots_indices=None, pilots=None, frequency_spreading=1, MSB_first=True, verbose=False):
+    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, CP=1/8, padding_left=0, padding_right=0, pilots_indices=None, pilots_values=None, frequency_spreading=1, MSB_first=True, verbose=False):
         """
         Returns an OFDM modulator with the desired settings
 
@@ -32,16 +33,19 @@ class ofdm_modulator():
         padding_right : int
             Empty FFT channels on the right (positive frequencies)
         pilots_indices : numpy array
-            Indices of pilots in the OFDM symbol. If 1D, pilots positions are constant throughout the symbols. if 2D, each column represents a new symbol. Looping will occur when all the column have been used
+            Indices of pilots in the OFDM symbol.
+            If 1D : pilots positions are constant throughout the symbols.
+            if 2D :each column represents a new symbol. Looping will occur when all the column have been used
             None by default (no pilots).
             For a 16 FFT :
             0 is the center frequency (DC)
             -8 is the lowest index
             +7 is the highest index
-        pilots : numpy array
-            Pilots values. If 1D, pilots will be the same for each symbol. If 2D, each column will represent the values for each symbol. Once the last column is used, the counter will loop back to the first one
+        pilots_values : numpy array or str
+            Pilots values.
+            If 1D array     : sequence of pilots (restarts when the end is reached). A single value in the array is valid
+            If "pn9"        : use a pseudo-random (PN9) sequence to generate pilots values
             None by default (no pilots)
-            Size must match pilots_indices !
         frequency_spreading : int
             1 : no spreading
             2 : 2x spreading (half the data rate)
@@ -69,9 +73,9 @@ class ofdm_modulator():
             raise ValueError("padding_left must be int")
         if not isinstance(padding_right, int):
             raise ValueError("padding_right must be int")
-        if pilots_indices is None and pilots is not None:
+        if pilots_indices is None and pilots_values is not None:
             raise ValueError("Pilots must have corresponding indices")
-        elif pilots_indices is not None and pilots is None:
+        elif pilots_indices is not None and pilots_values is None:
             raise ValueError("Pilots indices must have pilots values")
         if not isinstance(frequency_spreading, int):
             raise ValueError("frequency_spreading must be int")
@@ -79,35 +83,41 @@ class ofdm_modulator():
             raise ValueError(
                 f"Invalid frequency_spreading value {frequency_spreading}, must be [1, 2, 4]")
 
-        # Check pilots_indices and pilots (for type and same shape)
-        if pilots is not None:
-            if isinstance(pilots_indices, np.ndarray):
-                if pilots_indices.ndim == 0:
-                    # ok
-                    self._N_pilots = 1
-                elif pilots_indices.ndim <= 2:
-                    self._N_pilots = pilots_indices.shape[0]
-                    if not np.all(np.diff(pilots_indices, axis=0) >= 0):
-                        raise ValueError("Pilots indices must be ordered")
-                else:
-                    raise ValueError(
-                        f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
-            else:
+        # Manage pilots
+        if pilots_values is not None:
+            # Check for types
+            if not isinstance(pilots_indices, np.ndarray):
                 raise ValueError("pilots_indices must be a numpy array")
-            if not isinstance(pilots, np.ndarray):
-                raise ValueError("pilots must be a numpy array")
+            if not np.all(np.diff(pilots_indices, axis=0) >= 0):
+                raise ValueError("Pilots indices must be ordered")
+            if not (isinstance(pilots_values, np.ndarray) or isinstance(pilots_values, str)):
+                raise ValueError("Invalid pilots values type (must be numpy array or str)")
+            if not (1 <= pilots_indices.ndim <= 2):
+                raise ValueError(f"Invalid pilots indices shape ({pilots_indices.shape})")
+
+            self._N_pilots = pilots_indices.shape[0]
+            
+            if pilots_values == "pn9":
+                # Use PN9 sequence
+                self._use_pn9_sequence = True
             else:
-                if pilots.ndim > 2:
-                    raise ValueError(
-                        f"Invalid pilots dimension ({pilots.ndim} for shape {pilots.shape})")
-            if pilots.shape != pilots_indices.shape:
-                raise ValueError(
-                    "pilots and pilots_indices must have similar shape")
-            self._pilots = np.round(np.squeeze(pilots)).astype(int)
-            self._pilots_indices = np.round(
-                np.squeeze(pilots_indices)).astype(int)
+                self._use_pn9_sequence = False
+                # Check if an array is given for pilots values and it matches the size of pilots_indices
+                if pilots_values.ndim > 0 and pilots_values.shape[0] == pilots_indices.shape[0]:
+                    raise ValueError(f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
+            # Store the values
+            self._pilots_values = pilots_values
+            # Reshape to 2D (so that the rows always represent the pilots positions)
+            if pilots_indices.ndim == 1:
+                self._pilots_indices = pilots_indices.reshape(-1,1)
+            else:
+                self._pilots_indices = pilots_indices
         else:
             self._N_pilots = 0
+
+        self._pseudo_random_sequence = pn9()
+        
+        
 
         # Save the values in the class
         self._N_FFT = N_FFT
@@ -125,8 +135,8 @@ class ofdm_modulator():
 
         self._DC_TONE = 1
         # Length is FFT minus all the non-data channels (padding + pilots)
-        self._message_split_length = (
-            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol / self._frequency_spreading
+        self._message_split_length = int((
+            self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol / self._frequency_spreading)
 
         # Used only with variable pilots indices (multiple columns)
         self._pilots_column_index = 0
@@ -265,9 +275,6 @@ class ofdm_modulator():
         -------
         ifft_channels : numpy array        
         """
-        # Only adding 0s at the moment
-        # TODO : Study OFDM pilots and update this code
-        # Maybe add a sequential option (OFDM pilots are dependent on the previous ones)
         message_str = '-'*message.shape[0]
 
         self._print_verbose(
@@ -291,6 +298,62 @@ class ofdm_modulator():
 
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
 
+        # Create a BPSK modulator for PN9 sequence (is used)
+        bpsk_modulator = get_modulator('BPSK')
+
+        # Adding pilots
+        # pilot indices are given at the class instanciation
+        # pilots values are either :
+        # - given by pn9 sequence
+        # - given by array
+        if self._N_pilots > 0:
+            # Start by making a backup of the old ifft_channels (before adding pilots)
+            ifft_channels_old = ifft_channels.copy()
+            # Create the new array
+            ifft_channels = np.zeros([ifft_channels_old.shape[0] + self._N_pilots, ifft_channels_old.shape[1]], dtype=complex)
+
+            # Iterate over the symbols
+            for c in range(message.shape[1]):
+                # message_str is specific to each column
+                message_str_i = message_str
+                # Create a temporary symbol to add the pilots
+                symbol = ifft_channels_old[:, c]
+                # pilot_set is the array of pilots positions for the current symbol
+                # Each column represents a set of pilots indices for each symbol
+                pilot_set = self._pilots_indices[:, self._pilots_column_index]
+                self._print_verbose(f"    Adding pilots at {pilot_set} (set {self._pilots_column_index})")
+                
+                # use the pilots_column_index to select which column to set (stored in the class)
+                for row in self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2:
+                    if self._use_pn9_sequence:
+                        # PN9 sequence
+                        p = bpsk_modulator.convert(np.array([self._pseudo_random_sequence.next()]))[0]
+                    else:
+                        # Array
+                        p = self._pilots_values[self._pilots_values_index]
+                        self._pilots_values_index += 1
+                        if self._pilots_values_index >= self._pilots_values.size:
+                            self._pilots_values_index = 0
+                        
+                    # if the index is after the DC tone (not added yet, we remove one) to the index
+                    if row > self._N_FFT//2:
+                        row -= 1
+                    symbol = np.insert(
+                        symbol, row, p, axis=0)
+
+                    # Visual stuff :
+                    message_str_i = message_str_i[0:row] + \
+                        'P' + message_str_i[row:]
+                # Put the symbol back in the main array
+                ifft_channels[:,c] = symbol
+
+                self._pilots_column_index += 1
+                if self._pilots_column_index >= self._pilots_indices.shape[1]:
+                    self._pilots_column_index = 0
+
+                self._print_verbose(
+                    f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
+                
         # Adding DC Tone
         self._print_verbose("    Adding DC Tone")
         ifft_channels = np.insert(
@@ -299,58 +362,6 @@ class ofdm_modulator():
             'D' + message_str[self._N_FFT//2:]
         self._print_verbose("    Message with DC Tone :")
         self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
-
-        # Adding pilots. There are 3 possibilities :
-        # A : pilots is a single valuex
-        # B : pilots is a 1D array (multiple pilots, same for each symbol)
-        # C : pilots is a 2D array (multiple pilots, different for each symbol)
-        if self._N_pilots > 0:
-            if self._pilots.ndim == 0:
-                # A : pilots is a single value
-                self._print_verbose(
-                    f"    Adding pilot {self._pilots} at index : {self._pilots_indices}")
-                ifft_channels = np.insert(
-                    ifft_channels, self._pilots_indices + self._N_FFT//2, self._pilots, axis=0)
-                message_str = message_str[0:self._pilots_indices + self._N_FFT //
-                                          2] + 'P' + message_str[self._pilots_indices + self._N_FFT//2:]
-                self._print_verbose("    Message with pilots :")
-                self._print_verbose(
-                    f"    {message_str} ({ifft_channels.shape[0]}x)")
-
-            elif self._pilots_indices.ndim == 1:
-                # B : pilots is a 1D array (multiple pilots, same for each symbol)
-                self._print_verbose(
-                    f"    Adding pilot {self._pilots} at indices : {self._pilots_indices}")
-                for i, p in zip(self._pilots_indices + self._N_FFT//2, self._pilots):
-                    ifft_channels = np.insert(
-                        ifft_channels, i, p, axis=0)
-                    message_str = message_str[0:i] + 'P' + message_str[i:]
-                self._print_verbose("    Message with pilots :")
-                self._print_verbose(
-                    f"    {message_str} ({ifft_channels.shape[0]}x)")
-            else:
-                # C : pilots is a 2D array (multiple pilots, different for each symbol)
-                self._print_verbose(
-                    "    Messages with pilots (different for each symbol) :")
-                for c in range(message.shape[1]):
-                    # message_str is specific to each column
-                    message_str_i = message_str
-                    # Iterate over the columns
-                    # use the pilots_column_index to select which column to set (stored in the class)
-                    for r, p in zip(self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2, self._pilots[:, self._pilots_column_index]):
-                        ifft_channels[:, c] = np.insert(
-                            ifft_channels[:, c], r, p, axis=0)
-                        message_str_i = message_str_i[0:r] + \
-                            'P' + message_str_i[r:]
-
-                    self._print_verbose(
-                        f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
-
-                    # Add 1 to the column index, if it reaches the number of columns of the pilots
-                    # it loops over to 1
-                    self._pilots_column_index += 1
-                    if self._pilots_column_index >= self._pilots.shape[1]:
-                        self._pilots_column_index = 0
 
         return ifft_channels
 
@@ -393,13 +404,16 @@ class ofdm_modulator():
         cyclic_signal : numpy array
             the signal with cyclic prefix
         """
-        self._print_verbose("Adding cyclic prefix...")
-
-        cyclic_signal = np.concatenate(
-            [signal[0:int(signal.shape[0]*self._CP)], signal])
-        self._print_verbose(
-            f"    Signal {signal.shape} -> {cyclic_signal.shape}")
-        return cyclic_signal
+        if(self._CP > 0):
+            self._print_verbose("Adding cyclic prefix...")
+            prefix_length = int(signal.shape[0]*self._CP)
+            prefix = signal[-prefix_length:, :]
+            cyclic_signal = np.concatenate([prefix, signal])
+            self._print_verbose(
+                f"    Signal {signal.shape} -> {cyclic_signal.shape}")
+            return cyclic_signal
+        else:
+            return signal
 
     def messageToIQ(self, message, pad=False):
         """
@@ -414,8 +428,12 @@ class ofdm_modulator():
 
         Returns
         -------
-        I : Real part of the signal
-        Q : Imaginary part of the signal
+        I : ndarray
+            Real part of the signal
+        Q : ndarray
+            Imaginary part of the signal
+        t : ndarray
+            time vector
         """
         # Check types and values
         if not isinstance(message, np.ndarray):
@@ -437,6 +455,7 @@ class ofdm_modulator():
         message_split_mapped_spread = self._frequency_spread(
             message_split_mapped)
 
+        print(f"message_split_mapped_spread = {message_split_mapped_spread.shape}")
         ### Adding pilots and padding###
         message_split_mapped_pilots = self._add_pilots_and_padding(
             message_split_mapped_spread)
@@ -473,12 +492,14 @@ class ofdm_modulator():
                 Time vector
         """
         if subcarriers.ndim == 1:
-            subcarriers = subcarriers.reshape(-1,1)
+            subcarriers = subcarriers.reshape(-1, 1)
         elif subcarriers.ndim != 2:
-            raise ValueError(f"Invalid number of dimensions ({subcarriers.ndim})")
+            raise ValueError(
+                f"Invalid number of dimensions ({subcarriers.ndim})")
 
         if subcarriers.shape[0] != self._N_FFT:
-            raise ValueError(f"Invalid number of subcarriers ({subcarriers.shape[0]} / {self._N_FFT})")
+            raise ValueError(
+                f"Invalid number of subcarriers ({subcarriers.shape[0]} / {self._N_FFT})")
 
         ### IFFT ###
         Ts, signal = self._ifft(subcarriers)
