@@ -51,6 +51,17 @@ class pn9():
             sequence.append(self.next())
         return sequence
 
+    def get_current_value(self):
+        """
+        Gets the current flip-flops values as an integer
+
+        Returns
+        -------
+        value : int
+            Value of the flip-flops
+        """
+        return self._value
+
 
 
 
