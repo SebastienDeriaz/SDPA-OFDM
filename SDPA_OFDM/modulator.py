@@ -16,7 +16,9 @@ from numpy.fft import fft, ifft, fftshift, ifftshift, fftfreq
 
 
 class ofdm_modulator():
-    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, CP=1/8, padding_left=0, padding_right=0, pilots_indices=None, pilots_values=None, frequency_spreading=1, MSB_first=True, verbose=False):
+    def __init__(self, N_FFT=32, BW=8e6, modulation='BPSK', modulation_factor=1, CP=1/8,
+                 padding_left=0, padding_right=0, pilots_indices=None, pilots_values=None, frequency_spreading=1,
+                 initial_pilot_set=0, initial_pn9_seed=0x1FF, MSB_first=True, verbose=False):
         """
         Returns an OFDM modulator with the desired settings
 
@@ -28,6 +30,10 @@ class ofdm_modulator():
             Half bandwidth in Hz, total is 2*BW (default 8 Mhz)
         modulation : {'BPSK', 'QPSK', 'QAM16'}
             Type of modulation used, by default BPSK
+        modulation_factor : float
+            Factor to multiply the modulation with
+        CP : float
+            Cyclic prefix. This fraction ot the end of the symbol in the time domain is repeated at the beginning
         padding_left : int
             Empty FFT channels on the left (negative frequencies)
         padding_right : int
@@ -51,8 +57,10 @@ class ofdm_modulator():
             2 : 2x spreading (half the data rate)
             4 : 4x spreading (1/4 the data rate)
             See 18.2.3.6 Frequency spreading
-        CP : float
-            Cyclic prefix. This fraction ot the end of the symbol in the time domain is repeated at the beginning
+        initial_pilot_set : int
+            If multiple pilot sets are specified, this value is the starting one (defaults to 0)
+        initial_pn9_seed : int
+            Initial value for the pn9 sequence (if used)
         verbose : bool
             if True, prints informations throughout the process (False by default)
         MSB_first : bool
@@ -82,6 +90,10 @@ class ofdm_modulator():
         elif not frequency_spreading in [1, 2, 4]:
             raise ValueError(
                 f"Invalid frequency_spreading value {frequency_spreading}, must be [1, 2, 4]")
+        if not isinstance(initial_pilot_set, int):
+            raise ValueError("Invalid initial_pilot_set type")
+        if not isinstance(initial_pn9_seed, int):
+            raise ValueError("Invalid initial_pn9_seed type")
 
         # Manage pilots
         if pilots_values is not None:
@@ -91,12 +103,14 @@ class ofdm_modulator():
             if not np.all(np.diff(pilots_indices, axis=0) >= 0):
                 raise ValueError("Pilots indices must be ordered")
             if not (isinstance(pilots_values, np.ndarray) or isinstance(pilots_values, str)):
-                raise ValueError("Invalid pilots values type (must be numpy array or str)")
+                raise ValueError(
+                    "Invalid pilots values type (must be numpy array or str)")
             if not (1 <= pilots_indices.ndim <= 2):
-                raise ValueError(f"Invalid pilots indices shape ({pilots_indices.shape})")
+                raise ValueError(
+                    f"Invalid pilots indices shape ({pilots_indices.shape})")
 
             self._N_pilots = pilots_indices.shape[0]
-            
+
             if pilots_values == "pn9":
                 # Use PN9 sequence
                 self._use_pn9_sequence = True
@@ -104,20 +118,19 @@ class ofdm_modulator():
                 self._use_pn9_sequence = False
                 # Check if an array is given for pilots values and it matches the size of pilots_indices
                 if pilots_values.ndim > 0 and pilots_values.shape[0] == pilots_indices.shape[0]:
-                    raise ValueError(f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
+                    raise ValueError(
+                        f"Invalid pilots_indices dimension ({pilots_indices.ndim} for shape {pilots_indices.shape})")
             # Store the values
             self._pilots_values = pilots_values
             # Reshape to 2D (so that the rows always represent the pilots positions)
             if pilots_indices.ndim == 1:
-                self._pilots_indices = pilots_indices.reshape(-1,1)
+                self._pilots_indices = pilots_indices.reshape(-1, 1)
             else:
                 self._pilots_indices = pilots_indices
         else:
             self._N_pilots = 0
 
-        self._pseudo_random_sequence = pn9()
-        
-        
+        self._pseudo_random_sequence = pn9(initial_pn9_seed)
 
         # Save the values in the class
         self._N_FFT = N_FFT
@@ -139,7 +152,7 @@ class ofdm_modulator():
             self._N_FFT - self._N_pilots - self._padding_left - self._padding_right - self._DC_TONE) * self._bits_per_symbol / self._frequency_spreading)
 
         # Used only with variable pilots indices (multiple columns)
-        self._pilots_column_index = 0
+        self._pilots_column_index = initial_pilot_set
 
         self._print_verbose(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
 
@@ -198,6 +211,8 @@ class ofdm_modulator():
         """
         self._print_verbose(
             f"Constellation mapping using {self._modulator.name}...")
+        print(
+            f"    Modulation factor is {self._modulation_factor}...")  # make this one a verbose later
         mapped_message = self._modulator.convert(
             message) * self._modulation_factor
         self._print_verbose(
@@ -310,7 +325,8 @@ class ofdm_modulator():
             # Start by making a backup of the old ifft_channels (before adding pilots)
             ifft_channels_old = ifft_channels.copy()
             # Create the new array
-            ifft_channels = np.zeros([ifft_channels_old.shape[0] + self._N_pilots, ifft_channels_old.shape[1]], dtype=complex)
+            ifft_channels = np.zeros(
+                [ifft_channels_old.shape[0] + self._N_pilots, ifft_channels_old.shape[1]], dtype=complex)
 
             # Iterate over the symbols
             for c in range(message.shape[1]):
@@ -321,20 +337,22 @@ class ofdm_modulator():
                 # pilot_set is the array of pilots positions for the current symbol
                 # Each column represents a set of pilots indices for each symbol
                 pilot_set = self._pilots_indices[:, self._pilots_column_index]
-                self._print_verbose(f"    Adding pilots at {pilot_set} (set {self._pilots_column_index})")
-                
+                self._print_verbose(
+                    f"    Adding pilots at {pilot_set} (set {self._pilots_column_index})")
+
                 # use the pilots_column_index to select which column to set (stored in the class)
                 for row in self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2:
                     if self._use_pn9_sequence:
                         # PN9 sequence
-                        p = bpsk_modulator.convert(np.array([self._pseudo_random_sequence.next()]))[0]
+                        p = bpsk_modulator.convert(
+                            np.array([self._pseudo_random_sequence.next()]))[0]
                     else:
                         # Array
                         p = self._pilots_values[self._pilots_values_index]
                         self._pilots_values_index += 1
                         if self._pilots_values_index >= self._pilots_values.size:
                             self._pilots_values_index = 0
-                        
+
                     # if the index is after the DC tone (not added yet, we remove one) to the index
                     if row > self._N_FFT//2:
                         row -= 1
@@ -345,7 +363,7 @@ class ofdm_modulator():
                     message_str_i = message_str_i[0:row] + \
                         'P' + message_str_i[row:]
                 # Put the symbol back in the main array
-                ifft_channels[:,c] = symbol
+                ifft_channels[:, c] = symbol
 
                 self._pilots_column_index += 1
                 if self._pilots_column_index >= self._pilots_indices.shape[1]:
@@ -353,7 +371,7 @@ class ofdm_modulator():
 
                 self._print_verbose(
                     f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
-                
+
         # Adding DC Tone
         self._print_verbose("    Adding DC Tone")
         ifft_channels = np.insert(
@@ -455,7 +473,6 @@ class ofdm_modulator():
         message_split_mapped_spread = self._frequency_spread(
             message_split_mapped)
 
-        print(f"message_split_mapped_spread = {message_split_mapped_spread.shape}")
         ### Adding pilots and padding###
         message_split_mapped_pilots = self._add_pilots_and_padding(
             message_split_mapped_spread)
@@ -465,11 +482,13 @@ class ofdm_modulator():
 
         ### Cyclic prefix ###
         signal_cyclic = self._cyclic_prefix(signal)
-        t = np.arange(0, signal_cyclic.shape[0] * Ts, Ts)
 
-        I, Q = signal_cyclic.real, signal_cyclic.imag
+        ### Output signals ###
+        I, Q = signal_cyclic.real.reshape(
+            -1, order='F'), signal_cyclic.imag.reshape(-1, order='F')
+        t = np.arange(0, I.size * Ts, Ts)
 
-        return I, Q, t
+        return I, Q, t, message_split_mapped_pilots
 
     def subcarriersToIQ(self, subcarriers):
         """
@@ -511,6 +530,31 @@ class ofdm_modulator():
         I, Q = signal_cyclic.real, signal_cyclic.imag
 
         return I, Q, t
+
+    def get_pilot_set_index(self):
+        """
+        Returns the current pilot set index (to continue the message)
+        The index starts at 0
+
+        Returns
+        -------
+        pilot_set_index : int
+            The index of the NEXT pilot set to use
+        pn_seed : int
+            Seed for the pseudo-random sequence
+        """
+        return self._pilots_column_index
+    
+    def get_pn9_value(self):
+        """
+        Returns the current value of the pn9 generator
+
+        Returns
+        -------
+        value : int
+            Value of the pseudo-random generator for pilots generation
+        """
+        return self._pseudo_random_sequence.get_current_value()
 
     def _print_verbose(self, message: str):
         """
