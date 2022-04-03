@@ -211,7 +211,7 @@ class ofdm_modulator():
         """
         self._print_verbose(
             f"Constellation mapping using {self._modulator.name}...")
-        print(
+        self._print_verbose(
             f"    Modulation factor is {self._modulation_factor}...")  # make this one a verbose later
         mapped_message = self._modulator.convert(
             message) * self._modulation_factor
@@ -488,7 +488,7 @@ class ofdm_modulator():
             -1, order='F'), signal_cyclic.imag.reshape(-1, order='F')
         t = np.arange(0, I.size * Ts, Ts)
 
-        return I, Q, t, message_split_mapped_pilots
+        return I, Q, t
 
     def subcarriersToIQ(self, subcarriers):
         """
