@@ -60,7 +60,7 @@ class BPSK(modulator):
 
     def convert(self, signal):
         HIGH = 1 + 0j
-        if isinstance(signal, int | float):
+        if isinstance(signal, int) or isinstance(signal, float):
             # Single value
             output = HIGH if signal > 0 else -HIGH
         elif isinstance(signal, np.ndarray):
@@ -96,27 +96,26 @@ class QPSK(modulator):
             else:
                 first, second = 1j, 1
 
-            match signal.ndim:
-                case 1:
-                    # One-dimensional array
-                    output = (BPSK_mod.convert(signal[::2]) * first +
-                              BPSK_mod.convert(signal[1::2]) * second) * HIGH
-                case 2:
-                    # 2D array (mapping along the specified axis)
-                    if self.axis == 0:
-                        assert np.mod(
-                            signal.shape[0], 2) == 0, "Invalid number of elements"
-                        output = (BPSK_mod.convert(signal[::2, :]) * first +
-                                  BPSK_mod.convert(signal[1::2, :]) * second) * HIGH
-                    elif self.axis == 1:
-                        assert np.mod(
-                            signal.shape[1], 2) == 0, "Invalid number of elements"
-                        output = (BPSK_mod.convert(signal[:, ::2]) * first +
-                                  BPSK_mod.convert(signal[:, 1::2]) * second) * HIGH
-                    else:
-                        raise ValueError("Invalid axis")
-                case _:
-                    raise ValueError(f"Invalid signal shape ({signal.shape})")
+            if signal.ndim == 1:
+                # One-dimensional array
+                output = (BPSK_mod.convert(signal[::2]) * first +
+                            BPSK_mod.convert(signal[1::2]) * second) * HIGH
+            elif signal.ndim == 2:
+                # 2D array (mapping along the specified axis)
+                if self.axis == 0:
+                    assert np.mod(
+                        signal.shape[0], 2) == 0, "Invalid number of elements"
+                    output = (BPSK_mod.convert(signal[::2, :]) * first +
+                                BPSK_mod.convert(signal[1::2, :]) * second) * HIGH
+                elif self.axis == 1:
+                    assert np.mod(
+                        signal.shape[1], 2) == 0, "Invalid number of elements"
+                    output = (BPSK_mod.convert(signal[:, ::2]) * first +
+                                BPSK_mod.convert(signal[:, 1::2]) * second) * HIGH
+                else:
+                    raise ValueError("Invalid axis")
+            else:
+                raise ValueError(f"Invalid signal shape ({signal.shape})")
             return output
         else:
             raise ValueError("Unsupported type")
