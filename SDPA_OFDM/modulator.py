@@ -236,9 +236,11 @@ class ofdm_modulator():
         # We will use is "as is", so 2*k  then - 1
 
         if self._frequency_spreading == 1:
+            self._print_verbose("Frequency spreading of 1 (no modification)")
             # No spreading to do
             return message
         elif self._frequency_spreading == 2:
+            self._print_verbose("Frequency spreading of 2 (2x repetition)")
             # d(k-Nd/2-1) = d(k) * e^(j*2*pi*(2*k-1)/4)
 
             # k is the index (positive and starts at 1)
@@ -254,10 +256,13 @@ class ofdm_modulator():
             # lower portion of the FFT, message is the higher portion
             lower = message * phase
 
-            spread_message = np.block([[lower, message]])
+            spread_message = np.block([[lower], [message]])
+
+            print(f"{message.shape} -> {spread_message.shape}")
 
             return spread_message
         elif self._frequency_spreading == 4:
+            self._print_verbose("Frequency spreading of 4 (4x repetition)")
             # Same principle as 2x but a bit more complicated
             # message is located here :
             # ----------------Dmmmmmmmm--------
@@ -277,6 +282,8 @@ class ofdm_modulator():
             spread_message = np.block(
                 [[negative_low], [negative_high], [message], [positive_high]])
             return spread_message
+        else:
+            raise ValueError("Invali frequency spreading factor")
 
     def _add_pilots_and_padding(self, message):
         """
@@ -284,64 +291,59 @@ class ofdm_modulator():
 
         Parameters
         ----------
-        message : numpy array
+        message : numpy array (rows are IFFT channels and columns are symbols)
 
         Returns
         -------
-        ifft_channels : numpy array        
+        ifft_channels : numpy array (same format as message)        
         """
-        message_str = '-'*message.shape[0]
-
+        message_str = ['-']*self._N_FFT
         self._print_verbose(
             "Adding OFDM " + ("pilots, " if self._N_pilots else '') + "DC Tone and padding...")
-        self._print_verbose("    Message without pilots :")
-        self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
+        self._print_verbose("  Message without pilots :")
+        self._print_verbose(f"  {message_str} ({message.shape[0]}x)")
 
+        # Create the new signal matrix (empty for now)
+        ifft_channels = np.zeros(
+            [self._N_FFT, message.shape[1]], dtype=complex)
+        available_channels_global = list(
+            range(-self._N_FFT//2, self._N_FFT//2))
         # Adding padding
         self._print_verbose(
-            f"    Adding padding ({self._padding_left}, {self._padding_right})")
-        message_str = '0'*self._padding_left + message_str + '0'*self._padding_right
-        ifft_channels = message.copy()
-        # Add left padding
+            f"  Adding padding ({self._padding_left}, {self._padding_right})")
         if self._padding_left > 0:
-            zeros = np.zeros([self._padding_left, ifft_channels.shape[1]])
-            ifft_channels = np.concatenate([zeros, ifft_channels], axis=0)
-        # Add right padding
+            message_str[0:self._padding_left] = ['0'] * self._padding_left
+            available_channels_global = available_channels_global[self._padding_left:]
         if self._padding_right > 0:
-            zeros = np.zeros([self._padding_right, ifft_channels.shape[1]])
-            ifft_channels = np.concatenate([ifft_channels, zeros], axis=0)
-
+            message_str[-self._padding_right:] = ['0'] * self._padding_right
+            available_channels_global = available_channels_global[:-self._padding_right]
+        # No need to set the ifft_channels to zero for padding since there are already 0
         self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
 
-        # Create a BPSK modulator for PN9 sequence (is used)
+        # Adding DC tone
+        self._print_verbose("  Adding DC Tone")
+        message_str[len(message_str)//2] = 'D'
+        self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
+        available_channels_global.remove(0)  # Remove value=0
+        # Again, no need to set the value to 0
+
+        # Create a BPSK modulator for PN9 sequence (if used)
         bpsk_modulator = get_modulator('BPSK')
 
         # Adding pilots
-        # pilot indices are given at the class instanciation
-        # pilots values are either :
-        # - given by pn9 sequence
-        # - given by array
         if self._N_pilots > 0:
-            # Start by making a backup of the old ifft_channels (before adding pilots)
-            ifft_channels_old = ifft_channels.copy()
-            # Create the new array
-            ifft_channels = np.zeros(
-                [ifft_channels_old.shape[0] + self._N_pilots, ifft_channels_old.shape[1]], dtype=complex)
-
             # Iterate over the symbols
             for c in range(message.shape[1]):
-                # message_str is specific to each column
-                message_str_i = message_str
-                # Create a temporary symbol to add the pilots
-                symbol = ifft_channels_old[:, c]
-                # pilot_set is the array of pilots positions for the current symbol
-                # Each column represents a set of pilots indices for each symbol
+                message_str_i = message_str.copy()
+                symbol = message[:, c]
+                available_channels = available_channels_global.copy()  # For this symbol
+
                 pilot_set = self._pilots_indices[:, self._pilots_column_index]
                 self._print_verbose(
                     f"    Adding pilots at {pilot_set} (set {self._pilots_column_index})")
 
                 # use the pilots_column_index to select which column to set (stored in the class)
-                for row in self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2:
+                for row_index in self._pilots_indices[:, self._pilots_column_index] + self._N_FFT//2:
                     if self._use_pn9_sequence:
                         # PN9 sequence
                         p = bpsk_modulator.convert(
@@ -352,34 +354,23 @@ class ofdm_modulator():
                         self._pilots_values_index += 1
                         if self._pilots_values_index >= self._pilots_values.size:
                             self._pilots_values_index = 0
-
-                    # if the index is after the DC tone (not added yet, we remove one) to the index
-                    if row > self._N_FFT//2:
-                        row -= 1
-                    symbol = np.insert(
-                        symbol, row, p, axis=0)
+                    # Insert pilot at row (row is 0..N_FFT-1)
+                    ifft_channels[row_index, c] = p
+                    available_channels.remove(row_index - self._N_FFT//2)
 
                     # Visual stuff :
-                    message_str_i = message_str_i[0:row] + \
-                        'P' + message_str_i[row:]
-                # Put the symbol back in the main array
-                ifft_channels[:, c] = symbol
+                    message_str_i[row_index] = 'P'
 
                 self._pilots_column_index += 1
                 if self._pilots_column_index >= self._pilots_indices.shape[1]:
                     self._pilots_column_index = 0
 
-                self._print_verbose(
-                    f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
+                    self._print_verbose(
+                        f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
 
-        # Adding DC Tone
-        self._print_verbose("    Adding DC Tone")
-        ifft_channels = np.insert(
-            ifft_channels, 0 + self._N_FFT//2, 0, axis=0)
-        message_str = message_str[0:self._N_FFT//2] + \
-            'D' + message_str[self._N_FFT//2:]
-        self._print_verbose("    Message with DC Tone :")
-        self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
+                # Insert data where there's room
+                ifft_channels[[a + self._N_FFT //
+                               2 for a in available_channels], c] = message[:, c]
 
         return ifft_channels
 
@@ -544,7 +535,7 @@ class ofdm_modulator():
             Seed for the pseudo-random sequence
         """
         return self._pilots_column_index
-    
+
     def get_pn9_value(self):
         """
         Returns the current value of the pn9 generator
