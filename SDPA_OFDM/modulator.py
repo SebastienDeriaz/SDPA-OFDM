@@ -228,13 +228,6 @@ class ofdm_modulator():
         See 18.2.3.6 Frequency spreading
         """
 
-        # NOTE :
-        # The specification says :
-        #   (2 x k - 1)
-        #   not sure if this is supposed to say (2*k - 1) or (2 * (k-1))
-        #
-        # We will use is "as is", so 2*k  then - 1
-
         if self._frequency_spreading == 1:
             self._print_verbose("Frequency spreading of 1 (no modification)")
             # No spreading to do
@@ -301,7 +294,7 @@ class ofdm_modulator():
         self._print_verbose(
             "Adding OFDM " + ("pilots, " if self._N_pilots else '') + "DC Tone and padding...")
         self._print_verbose("  Message without pilots :")
-        self._print_verbose(f"  {message_str} ({message.shape[0]}x)")
+        self._print_verbose(f"    {''.join(message_str)} ({message.shape[0]}x)")
 
         # Create the new signal matrix (empty for now)
         ifft_channels = np.zeros(
@@ -318,12 +311,12 @@ class ofdm_modulator():
             message_str[-self._padding_right:] = ['0'] * self._padding_right
             available_channels_global = available_channels_global[:-self._padding_right]
         # No need to set the ifft_channels to zero for padding since there are already 0
-        self._print_verbose(f"    {message_str} ({message.shape[0]}x)")
+        self._print_verbose(f"    {''.join(message_str)} ({message.shape[0]}x)")
 
         # Adding DC tone
         self._print_verbose("  Adding DC Tone")
         message_str[len(message_str)//2] = 'D'
-        self._print_verbose(f"    {message_str} ({ifft_channels.shape[0]}x)")
+        self._print_verbose(f"    {''.join(message_str)} ({ifft_channels.shape[0]}x)")
         available_channels_global.remove(0)  # Remove value=0
         # Again, no need to set the value to 0
 
@@ -366,11 +359,14 @@ class ofdm_modulator():
                     self._pilots_column_index = 0
 
                     self._print_verbose(
-                        f"    {message_str_i} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
+                        f"    {''.join(message_str_i)} ({ifft_channels.shape[0]}x) (pilot set/index : {self._pilots_column_index})")
 
                 # Insert data where there's room
                 ifft_channels[[a + self._N_FFT //
                                2 for a in available_channels], c] = message[:, c]
+        else:
+            ifft_channels[available_channels_global,:] = message
+
 
         return ifft_channels
 
