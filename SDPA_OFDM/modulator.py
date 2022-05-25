@@ -154,7 +154,7 @@ class ofdm_modulator():
         # Used only with variable pilots indices (multiple columns)
         self._pilots_column_index = initial_pilot_set
 
-        self._print_verbose(f"Bandwidth = {BW} (spacing of {2*BW/(N_FFT-1)})")
+        self._print_verbose(f"Bandwidth = {BW}")
 
     def _split_message(self, message, pad=False):
         """
